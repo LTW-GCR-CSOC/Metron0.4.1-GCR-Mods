@@ -159,6 +159,5 @@ sed -i "$AWS_ELASTIC_IP  node1" /etc/hosts
 
 Navigate to the following resources to explore your newly minted Apache Metron environment.
 
-* [Metron Alerts] http://node1:4201
 * [Ambari] http://node1:8080
-* [Kihana] http://node1:5000
+* [Kibana] http://node1:5000
