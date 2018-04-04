@@ -83,9 +83,9 @@ Running the following script can help validate whether you have all the prerequi
 
 #### How do I install these on MacOS?
 
-1. Download the 0.4.1 build [(apache-metron-0.4.2.tar.gz)] (https://archive.apache.org/dist/metron/0.4.2/) and decompress the file. 
+1. Download the [apache-metron-0.4.2.tar.gz](https://archive.apache.org/dist/metron/0.4.2/) and decompress the file. 
 
-2. Copy this custom [Vagrantfile](./Vagrantfile) file and copy it to this directory (replace the existing Vagrantfile that is in the directory)
+2. Copy this custom [Vagrantfile](./Vagrantfile) file to the directory below (replace the existing Vagrantfile that is in the directory)
 ```
 /../metron-deployment/vagrant/full-dev-platform/
 ```
