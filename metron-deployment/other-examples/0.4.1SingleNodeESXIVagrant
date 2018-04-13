@@ -1,0 +1,187 @@
+#Global Cybersecurity Resource 2017-2018 (cugcr.ca)
+#
+##########################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one or more
+#  contributor license agreements.  See the NOTICE file distributed with
+#  this work for additional information regarding copyright ownership.
+#  The ASF licenses this file to You under the Apache License, Version 2.0
+#  (the "License"); you may not use this file except in compliance with
+#  the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#a  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+##########################################################################
+#ABOUT:
+#-------------------
+#Deploys Apache Metron as a single node instance (node1) to ESXi.
+#
+#This file was originally adapted from the Metron Single Node Install Vagrant file located here:
+#https://github.com/josenk/vagrant-vmware-esxi/
+##########################################################################
+#LOCATION OF FILE:
+#-------------------
+#This file should be located in the following directory:
+#/../metron-deployment/vagrant/full-dev-platform
+##########################################################################
+#REQUIREMENTS(What is needed to run this file):
+#-------------------
+#install: vagrant plugin install vagrant-vmware-esxi
+#install: vagrant plugin install vagrant-reload
+#install: vagrant plugin install ffi
+#install: vagrant plugin install vagrant-disksize
+#install: vagrant plugin install vagrant-share 
+#install: pip install --upgrade setuptools --user python
+#
+#install VMware OVF Tool - https://www.vmware.com/support/developer/ovf/
+#
+#export PATH=$PATH:"/Applications/VMware OVF Tool/"
+##########################################################################
+#BEFORE RUNNING:
+#Recommended steps before running file (clearing vagrant, docker, ext..):
+#-------------------
+#vagrant halt node1 -f
+#vagrant destroy node1 -f
+#rm -rf /../.m2/repository/*
+##########################################################################
+#HOW TO EXECUTE THIS FILE:
+#-------------------
+#Set Environment Variables & Run Vagrant
+#-------------------
+#
+#export ESXI_IP="xxx.xxx.xxx.xxx"
+#export VIRT_NAME="VM Network"
+#export HOST_IP="xxx.xxx.xxx.xxx"
+#vagrant up --provider=vmware_esxi
+#
+#you will be asked for the ESXI server password
+#
+##########################################################################
+
+require 'getoptlong'
+require 'vagrant-reload'
+require 'vagrant-vmware-esxi'
+Vagrant.require_plugin "vagrant-reload"
+Vagrant.require_plugin "vagrant-vmware-esxi"
+
+#  Use rsync and NFS synced folders. (or disable them)
+#config.vm.synced_folder('.', '/vagrant', type: 'rsync')
+#config.vm.synced_folder('.', '/vagrant', type: 'nfs', disabled: true)
+
+ansibleTags=''
+ansibleSkipTags='sensors,quick_dev'
+
+begin
+   opts = GetoptLong.new(
+     [ '--ansible-tags', GetoptLong::OPTIONAL_ARGUMENT ],
+     [ '--ansible-skip-tags', GetoptLong::OPTIONAL_ARGUMENT ]
+   )
+
+   opts.quiet = TRUE
+
+   opts.each do |opt, arg|
+     case opt
+       when '--ansible-tags'
+         ansibleTags=arg
+       when '--ansible-skip-tags'
+         ansibleSkipTags=arg
+     end
+   end
+rescue Exception => ignored
+#Ignore to allow other opts to be passed to Vagrant
+end
+
+puts " Running with ansible-tags: " + ansibleTags.split(",").to_s if ansibleTags != ''
+puts " Running with ansible-skip-tags: " + ansibleSkipTags.split(",").to_s if ansibleSkipTags != ''
+
+hosts = [{
+    hostname: "node1",
+    ip: ENV['ESXI_IP'],
+    memory: "32000",
+
+    cpus: 2,
+    promisc: 2  # enables promisc on the 'Nth' network interface
+}]
+
+Vagrant.configure("2") do |config|
+ ##https://app.vagrantup.com/boxes/search
+ ##config.vm.box = 'puppetlabs/centos-5.11-32-nocm'
+ ##config.vm.box = 'generic/centos7'
+ config.vm.box = 'generic/centos6'
+ config.vm.synced_folder('.', '/vagrant', type: 'rsync')
+ config.vm.synced_folder('.', '/vagrant', type: 'nfs', disabled: true)
+ config.vm.network 'public_network', ip: ENV['HOST_IP']
+
+ config.vm.provider :vmware_esxi do |esxi, override|
+   esxi.esxi_hostname = ENV['ESXI_IP']
+   esxi.esxi_hostport = 22
+   esxi.esxi_username = ENV['ESXI_USERNAME']
+   esxi.esxi_password = 'prompt:'
+   esxi.guest_name = 'node1' 
+   esxi.guest_numvcpus = '4'
+   esxi.guest_extend_main_disk_size = 77
+   #esxi.guest_storage = [5,3]
+   esxi.guest_memsize = '32000'
+   esxi.esxi_virtual_network = [ENV['VIRT_NAME'], ENV['VIRT_NAME']]
+ end
+
+ #The following will install rsyslog, change hostname to node1, resize the disk partition, and reboot
+ config.vm.provision "shell", inline: <<-SHELL
+   echo 'sed -i "s/if cur > max_size + max_size\\*\\.10:/if cur > (float(max_size)\\*1\\.10):/g" /usr/lib/python2.6/site-packages/urlgrabber/grabber.py' >> test.log 
+   sed -i "s/if cur > max_size + max_size\\*\\.10:/if cur > (float(max_size)\\*1\\.10):/g" /usr/lib/python2.6/site-packages/urlgrabber/grabber.py
+   yum install -y wget
+   yum install -y yum-utils
+   hostname node1
+   sed -i "s/^HOSTNAME=.*/HOSTNAME=node1/g" /etc/sysconfig/network
+   (echo n; echo p; echo 3; echo ; echo ; echo t; echo 3; echo 8e; echo w;) | fdisk /dev/sda || true
+   partx -v -a /dev/sda
+   pvcreate /dev/sda3
+   vgextend vg_bazinga /dev/sda3
+   lvextend -l +100%FREE /dev/vg_bazinga/lv_root
+   resize2fs /dev/vg_bazinga/lv_root
+   ip link set eth0 promisc on
+   ifconfig eth0 promisc   
+   
+   #wget http://rpms.adiscon.com/v8-stable/rsyslog.repo  
+   #mv rsyslog.repo /etc/yum.repos.d/rsyslog.repo
+   #yum info rsyslog --skip-broken
+   #yum install -y rsyslog
+   yum-config-manager --add-repo http://rpms.adiscon.com/v8-stable/epel-6/x86_64 && \
+   yum install --nogpg -y \
+   rsyslog \
+   rsyslog-kafka && \
+   rm /etc/rsyslog.d/listen.conf
+   rsyslogd -N1 && rsyslogd
+
+   #yum groupinstall -y Development Tools
+   #yum install -y java-1.8.0-openjdk-devel
+   #
+   #INSTALL NIFI
+   #-------------------
+   #sudo -i
+   #cd /opt
+   #wget https://archive.apache.org/dist/nifi/1.2.0/nifi-1.2.0-bin.tar.gz
+   #tar xf nifi-1.2.0-bin.tar.gz
+   #note: modify nifi-1.1.2/conf/nifi.properties to change "nifi.web.http.port" to port 8089
+   #sed -i "s/^nifi\\.web\\.http\\.port=.*/nifi\\.web\\.http\\.port=8089/g" /opt/nifi-1.2.0/conf/nifi.properties
+   #sed -i "s/^java\\.arg\\.2=-Xms512m/java\\.arg\\.2=-Xms2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
+   #sed -i "s/^java\\.arg\\.3=-Xmx512m/java\\.arg\\.3=-Xmx2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
+   #/opt/nifi-1.2.0/bin/nifi.sh install
+   #/opt/nifi-1.2.0/bin/nifi.sh stop
+   #/opt/nifi-1.2.0/bin/nifi.sh start
+ SHELL
+
+ config.vm.provision :ansible do |ansible|
+   ansible.playbook = "../../playbooks/metron_full_install.yml"
+   ansible.host_key_checking = false
+   ansible.limit = 'all'
+   ansible.sudo = true
+   ansible.tags = ansibleTags.split(",") if ansibleTags != ''
+   ansible.skip_tags = ansibleSkipTags.split(",") if ansibleSkipTags != ''
+   ansible.inventory_path = "../../inventory/full-dev-platform"
+ end
+end
