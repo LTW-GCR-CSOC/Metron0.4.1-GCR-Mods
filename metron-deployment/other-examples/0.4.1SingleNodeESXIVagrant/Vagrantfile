@@ -53,9 +53,17 @@
 #Set Environment Variables & Run Vagrant
 #-------------------
 #
+#
+#export VIRT_NAME="*VM Network*"
+#export GUEST_OS="generic/*"
+#export GUEST_BOOT_DISK_SIZE_GB=""
+#export GUEST_RAM_MB=""
+#export GUEST_HOSTNAME=""
+#export GUEST_CPUS=""
 #export ESXI_IP="xxx.xxx.xxx.xxx"
-#export VIRT_NAME="VM Network"
+#export ESXI_USERNAME=""
 #export HOST_IP="xxx.xxx.xxx.xxx"
+#
 #vagrant up --provider=vmware_esxi
 #
 #you will be asked for the ESXI server password
@@ -98,20 +106,13 @@ end
 puts " Running with ansible-tags: " + ansibleTags.split(",").to_s if ansibleTags != ''
 puts " Running with ansible-skip-tags: " + ansibleSkipTags.split(",").to_s if ansibleSkipTags != ''
 
-hosts = [{
-    hostname: "node1",
-    ip: ENV['ESXI_IP'],
-    memory: "32000",
-
-    cpus: 2,
-    promisc: 2  # enables promisc on the 'Nth' network interface
-}]
 
 Vagrant.configure("2") do |config|
  ##https://app.vagrantup.com/boxes/search
  ##config.vm.box = 'puppetlabs/centos-5.11-32-nocm'
  ##config.vm.box = 'generic/centos7'
- config.vm.box = 'generic/centos6'
+ ##config.vm.box = 'generic/centos6'
+ config.vm.box = ENV['GUEST_OS']
  config.vm.synced_folder('.', '/vagrant', type: 'rsync')
  config.vm.synced_folder('.', '/vagrant', type: 'nfs', disabled: true)
  config.vm.network 'public_network', ip: ENV['HOST_IP']
@@ -119,37 +120,56 @@ Vagrant.configure("2") do |config|
  config.vm.provider :vmware_esxi do |esxi, override|
    esxi.esxi_hostname = ENV['ESXI_IP']
    esxi.esxi_hostport = 22
-   esxi.esxi_username = ENV['ESXI_USERNAME']
+   esxi.esxi_username = ENV['ESXI_USERNAME'] 
    esxi.esxi_password = 'prompt:'
-   esxi.guest_name = 'node1' 
-   esxi.guest_numvcpus = '4'
-   esxi.guest_extend_main_disk_size = 77
+   esxi.guest_name = ENV['GUEST_VMNAME'] 
+   esxi.guest_numvcpus = ENV['GUEST_CPUS'] 
+   esxi.guest_boot_disk_size = ENV['GUEST_BOOT_DISK_SIZE_GB'] 
    #esxi.guest_storage = [5,3]
-   esxi.guest_memsize = '32000'
+   esxi.guest_memsize = ENV['GUEST_RAM_MB'] 
    esxi.esxi_virtual_network = [ENV['VIRT_NAME'], ENV['VIRT_NAME']]
  end
 
  #The following will install rsyslog, change hostname to node1, resize the disk partition, and reboot
  config.vm.provision "shell", inline: <<-SHELL
+
+   #Allow for remote downloads
    echo 'sed -i "s/if cur > max_size + max_size\\*\\.10:/if cur > (float(max_size)\\*1\\.10):/g" /usr/lib/python2.6/site-packages/urlgrabber/grabber.py' >> test.log 
    sed -i "s/if cur > max_size + max_size\\*\\.10:/if cur > (float(max_size)\\*1\\.10):/g" /usr/lib/python2.6/site-packages/urlgrabber/grabber.py
+   
    yum install -y wget
    yum install -y yum-utils
-   hostname node1
-   sed -i "s/^HOSTNAME=.*/HOSTNAME=node1/g" /etc/sysconfig/network
+
+
+   #Set Time Zone to UTC
+   \\cp /usr/share/zoneinfo/UTC /etc/localtime
+   yum install -y ntp
+   chkconfig ntpd on 
+
+   #Change Host Name
+   export hostNameFromVagrant='#{ENV['GUEST_HOSTNAME']}'
+   echo "127.0.0.1   $hostNameFromVagrant" >> /etc/hosts
+   hostname #{ENV['GUEST_HOSTNAME']}
+   sed -i "s/^HOSTNAME=.*/HOSTNAME=$hostNameFromVagrant/g" /etc/sysconfig/network
+
+   #Expand disk space
    (echo n; echo p; echo 3; echo ; echo ; echo t; echo 3; echo 8e; echo w;) | fdisk /dev/sda || true
    partx -v -a /dev/sda
    pvcreate /dev/sda3
    vgextend vg_bazinga /dev/sda3
    lvextend -l +100%FREE /dev/vg_bazinga/lv_root
    resize2fs /dev/vg_bazinga/lv_root
+
    ip link set eth0 promisc on
    ifconfig eth0 promisc   
-   
-   #wget http://rpms.adiscon.com/v8-stable/rsyslog.repo  
-   #mv rsyslog.repo /etc/yum.repos.d/rsyslog.repo
-   #yum info rsyslog --skip-broken
-   #yum install -y rsyslog
+
+   #download system tools
+   yum install htop -y
+
+   #needed for Metron 0.4.2 - Kibana
+   yum install python-argparse -y
+
+   #Install rsyslog that works with nifi
    yum-config-manager --add-repo http://rpms.adiscon.com/v8-stable/epel-6/x86_64 && \
    yum install --nogpg -y \
    rsyslog \
@@ -157,22 +177,22 @@ Vagrant.configure("2") do |config|
    rm /etc/rsyslog.d/listen.conf
    rsyslogd -N1 && rsyslogd
 
+
    #yum groupinstall -y Development Tools
    #yum install -y java-1.8.0-openjdk-devel
    #
    #INSTALL NIFI
    #-------------------
-   #sudo -i
    #cd /opt
    #wget https://archive.apache.org/dist/nifi/1.2.0/nifi-1.2.0-bin.tar.gz
    #tar xf nifi-1.2.0-bin.tar.gz
-   #note: modify nifi-1.1.2/conf/nifi.properties to change "nifi.web.http.port" to port 8089
+   ##nifi.properties to change "nifi.web.http.port" to port 8089
    #sed -i "s/^nifi\\.web\\.http\\.port=.*/nifi\\.web\\.http\\.port=8089/g" /opt/nifi-1.2.0/conf/nifi.properties
    #sed -i "s/^java\\.arg\\.2=-Xms512m/java\\.arg\\.2=-Xms2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
    #sed -i "s/^java\\.arg\\.3=-Xmx512m/java\\.arg\\.3=-Xmx2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
-   #/opt/nifi-1.2.0/bin/nifi.sh install
-   #/opt/nifi-1.2.0/bin/nifi.sh stop
-   #/opt/nifi-1.2.0/bin/nifi.sh start
+   ##/opt/nifi-1.2.0/bin/nifi.sh install
+   ##/opt/nifi-1.2.0/bin/nifi.sh stop
+   ##/opt/nifi-1.2.0/bin/nifi.sh start
  SHELL
 
  config.vm.provision :ansible do |ansible|
@@ -184,4 +204,21 @@ Vagrant.configure("2") do |config|
    ansible.skip_tags = ansibleSkipTags.split(",") if ansibleSkipTags != ''
    ansible.inventory_path = "../../inventory/full-dev-platform"
  end
+
+ config.vm.provision "shell", inline: <<-SHELL
+   #
+   #INSTALL NIFI
+   #-------------------
+   cd /opt
+   wget https://archive.apache.org/dist/nifi/1.2.0/nifi-1.2.0-bin.tar.gz
+   tar xf nifi-1.2.0-bin.tar.gz
+   #nifi.properties to change "nifi.web.http.port" to port 8089
+   sed -i "s/^nifi\\.web\\.http\\.port=.*/nifi\\.web\\.http\\.port=8089/g" /opt/nifi-1.2.0/conf/nifi.properties
+   sed -i "s/^java\\.arg\\.2=-Xms512m/java\\.arg\\.2=-Xms2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
+   sed -i "s/^java\\.arg\\.3=-Xmx512m/java\\.arg\\.3=-Xmx2g/g" /opt/nifi-1.2.0/conf/bootstrap.conf
+   /opt/nifi-1.2.0/bin/nifi.sh install
+   /opt/nifi-1.2.0/bin/nifi.sh stop
+   /opt/nifi-1.2.0/bin/nifi.sh start
+ SHELL
 end
+
